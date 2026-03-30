@@ -69,9 +69,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "a diff" > docs/changelog.rst 
           git add docs/changelog.rst docs/credits.rst
-          git commit -m "Update changelog for PR #${{ github.event.issue.number }}"
-          HEAD_REPO="${{ steps.pr-info.outputs.head_repo }}"
-          HEAD_BRANCH="${{ steps.pr-info.outputs.branch }}"
-          PUSH_URL="https://x-access-token:${GH_TOKEN}@github.com/${HEAD_REPO}.git"
-          git push "$PUSH_URL" "HEAD:refs/heads/${HEAD_BRANCH}"
+          if git diff --cached --quiet; then
+            echo "No changes, skipping commit"
+          else
+            git commit -m "Update changelog for PR #${{ github.event.issue.number }}"
+            HEAD_REPO="${{ steps.pr-info.outputs.head_repo }}"
+            HEAD_BRANCH="${{ steps.pr-info.outputs.branch }}"
+            PUSH_URL="https://x-access-token:${GH_TOKEN}@github.com/${HEAD_REPO}.git"
+            git push "$PUSH_URL" "HEAD:refs/heads/${HEAD_BRANCH}"
+          fi

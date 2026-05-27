@@ -11,7 +11,7 @@ permissions:
 jobs:
   changelog:
     if: >
-      github.event.comment.body == '/changelog' &&
+      startsWith(github.event.comment.body, '/changelog') &&
       github.event.issue.pull_request != null
     runs-on: ubuntu-latest
 
@@ -30,6 +30,40 @@ jobs:
             exit 1
           fi
 
+      - name: Parse required SHA
+        id: parse
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          # Expect exactly: "/changelog <sha>"
+          REQUESTED=$(echo "$COMMENT_BODY" | awk '{print $2}')
+          if [[ -z "$REQUESTED" ]]; then
+            echo "Missing SHA. Usage: /changelog <full-or-short-sha>"
+            exit 1
+          fi
+          if [[ ! "$REQUESTED" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "Invalid SHA format: $REQUESTED"
+            exit 1
+          fi
+          echo "requested=$REQUESTED" >> "$GITHUB_OUTPUT"
+
+      - name: Verify SHA belongs to PR
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED: ${{ steps.parse.outputs.requested }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          PR_SHAS=$(gh api --paginate \
+            "repos/${{ github.repository }}/pulls/${PR_NUMBER}/commits" \
+            --jq '.[].sha')
+          SHA=$(echo "$PR_SHAS" | grep -E "^${REQUESTED}" | head -n1 || true)
+          if [[ -z "$SHA" ]]; then
+            echo "SHA ${REQUESTED} is not part of PR #${PR_NUMBER}"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
       - name: Get PR info
         id: pr-info
         env:
@@ -39,7 +73,6 @@ jobs:
           PR_JSON=$(gh pr view $PR_NUMBER \
             --repo ${{ github.repository }} \
             --json headRefName,headRepository,headRepositoryOwner)
-          echo $PR_JSON
           HEAD_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
           HEAD_OWNER=$(echo "$PR_JSON" | jq -r '.headRepositoryOwner.login')
           HEAD_REPO=$(echo "$PR_JSON" | jq -r '.headRepository.name')
@@ -49,8 +82,18 @@ jobs:
       - name: Checkout PR branch
         uses: actions/checkout@v5
         with:
-          ref: refs/pull/${{ github.event.issue.number }}/head
+          ref: ${{ steps.resolve.outputs.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      # optionnal, if you are curious about people trying to toctou 
+      - name: Verify checkout matches reviewed SHA
+        run: |
+          ACTUAL=$(git rev-parse HEAD)
+          EXPECTED="${{ steps.resolve.outputs.sha }}"
+          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+            echo "TOCTOU detected: expected $EXPECTED, got $ACTUAL"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: pip install anthropic
@@ -70,7 +113,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "a diff" > docs/changelog.rst 
           git add docs/changelog.rst docs/credits.rst
           if git diff --cached --quiet; then
             echo "No changes, skipping commit"
@@ -81,3 +123,5 @@ jobs:
             PUSH_URL="https://x-access-token:${GH_TOKEN}@github.com/${HEAD_REPO}.git"
             git push "$PUSH_URL" "HEAD:refs/heads/${HEAD_BRANCH}"
           fi
+
+
